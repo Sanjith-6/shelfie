@@ -1,0 +1,24 @@
+# Python
+backend/.venv/
+backend/**/__pycache__/
+*.pyc
+backend/db.sqlite3
+backend/media/
+
+# Env / secrets
+.env
+*.env.local
+
+# Node / Expo
+app/node_modules/
+app/.expo/
+app/dist/
+app/npm-debug.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
