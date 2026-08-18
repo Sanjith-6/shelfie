@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import cv2
@@ -30,6 +31,13 @@ PADDING_RATIO = 0.03  # small margin so crops don't clip edge text
 # Fewer usable YOLO boxes than this triggers the edge-density fallback.
 FALLBACK_MIN_YOLO_BOXES = 2
 
+# IoU above this means "probably the same object twice", not two distinct
+# books - the standard overlap-detection meaning, not a value tuned against
+# these photos. Found we needed this from shelf_1: two "kept" boxes turned
+# out to be duplicate detections of one leaning stack (IoU ~0.64), which
+# inflated the count enough to block the fallback from firing.
+DEDUP_IOU_THRESHOLD = 0.5
+
 # --- Aspect-ratio / size filtering, applied to both paths' output. ---
 # Hand-set by reasoning about this task, not from labelled data - same
 # caveat as matcher.py's thresholds. Deliberately orientation-agnostic:
@@ -43,6 +51,7 @@ MAX_BOX_DIMENSION_FRACTION = 0.70  # a box this big is probably "the whole shelf
 SMOOTH_WINDOW_FRACTION = 0.01  # moving-average window, as a fraction of image width
 MIN_STRIP_WIDTH_FRACTION = 0.02  # minimum spacing between detected boundaries
 PEAK_HEIGHT_FRACTION = 0.3  # a boundary candidate must clear this fraction of the signal's range
+MAX_STRIP_WIDTH_FRACTION = 0.40  # a strip this wide is probably several books merged together
 
 
 @dataclass
@@ -85,6 +94,25 @@ def _filter_box(box: tuple[int, int, int, int], image_width: int, image_height: 
         return "too large"
     if max(w, h) / min(w, h) > MAX_ASPECT_RATIO:
         return "too elongated"
+    return None
+
+
+def _filter_strip(box: tuple[int, int, int, int], image_width: int) -> str | None:
+    """Fallback strips are full-height by construction - we only know left/
+    right boundaries from the edge-density signal, not where an individual
+    book's top or bottom is. _filter_box's height-based checks would reject
+    every strip unconditionally, which is exactly what happened the first
+    time this ran for real: width is the only meaningful signal here, for a
+    slice being too narrow (noise) or too wide (probably several books
+    merged into one strip)."""
+    x1, _, x2, _ = box
+    w = x2 - x1
+    if w <= 0:
+        return "degenerate (zero or negative width)"
+    if w < image_width * MIN_STRIP_WIDTH_FRACTION:
+        return "too narrow"
+    if w > image_width * MAX_STRIP_WIDTH_FRACTION:
+        return "too wide"
     return None
 
 
@@ -169,11 +197,42 @@ def _run_fallback(image: Image.Image) -> list[Detection]:
     return detections
 
 
-def _filter_and_log(detections: list[Detection], width: int, height: int, pass_name: str) -> list[Detection]:
+def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter_w, inter_h = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    intersection = inter_w * inter_h
+    if intersection == 0:
+        return 0.0
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _dedup_by_iou(detections: list[Detection], iou_threshold: float) -> list[Detection]:
+    """Collapses heavily-overlapping boxes into one, keeping the
+    higher-confidence detection. The fallback trigger counts boxes as a
+    proxy for distinct books, so without this, two overlapping detections
+    of the same region inflate the count and can block the fallback from
+    firing when it should have."""
+    by_confidence = sorted(detections, key=lambda d: d.confidence or 0, reverse=True)
+    kept: list[Detection] = []
+    for d in by_confidence:
+        if not any(_iou(d.box, k.box) > iou_threshold for k in kept):
+            kept.append(d)
+    return kept
+
+
+def _filter_and_log(
+    detections: list[Detection], filter_fn: Callable[[Detection], str | None], pass_name: str
+) -> list[Detection]:
     kept = []
     dropped_reasons: dict[str, int] = {}
     for d in detections:
-        reason = _filter_box(d.box, width, height)
+        reason = filter_fn(d)
         if reason is None:
             kept.append(d)
         else:
@@ -212,7 +271,8 @@ def detect_books(image: Image.Image) -> DetectionResult:
         logger.error("YOLO inference failed: %s", exc)
         return DetectionResult(detections=[], path_used="none", error="detector_inference_failed")
 
-    kept = _filter_and_log(yolo_detections, width, height, "YOLO")
+    kept = _filter_and_log(yolo_detections, lambda d: _filter_box(d.box, width, height), "YOLO")
+    kept = _dedup_by_iou(kept, DEDUP_IOU_THRESHOLD)
 
     if len(kept) >= FALLBACK_MIN_YOLO_BOXES:
         return DetectionResult(
@@ -234,7 +294,7 @@ def detect_books(image: Image.Image) -> DetectionResult:
             warnings=[f"YOLO found only {len(kept)} usable box(es), and the fallback failed too"],
         )
 
-    kept_fallback = _filter_and_log(fallback_detections, width, height, "Fallback")
+    kept_fallback = _filter_and_log(fallback_detections, lambda d: _filter_strip(d.box, width), "Fallback")
 
     return DetectionResult(
         detections=kept_fallback,
