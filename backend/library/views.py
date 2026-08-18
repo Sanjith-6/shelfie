@@ -23,7 +23,9 @@ STUB_SPINES = [
                 "title": "1984",
                 "author": "George Orwell",
                 "score": 0.97,
-                "reasons": ["exact title match", "exact author match"],
+                # Not from matcher.py - it isn't wired into this view yet, so
+                # this is a placeholder shape, not a real explanation.
+                "reasons": ["stub data - matcher not wired in yet"],
             }
         ],
     },
@@ -36,14 +38,14 @@ STUB_SPINES = [
                 "title": "The Alchemist",
                 "author": "Paulo Coelho",
                 "score": 0.82,
-                "reasons": ["title match", "tied with another catalog edition"],
+                "reasons": ["stub data - matcher not wired in yet"],
             },
             {
                 "catalog_id": 1006,
                 "title": "The Alchemist",
                 "author": "Paulo Coelho",
                 "score": 0.82,
-                "reasons": ["title match", "tied with another catalog edition"],
+                "reasons": ["stub data - matcher not wired in yet"],
             },
         ],
     },

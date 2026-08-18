@@ -29,6 +29,7 @@ class MatchStatus(str, Enum):
 class Candidate:
     entry: CatalogEntry
     score: float
+    reasons: list[str]
 
 
 @dataclass
@@ -74,15 +75,21 @@ def _length_ratio_penalty(a: str, b: str) -> float:
     return shorter / longer
 
 
-def _title_score(read_title: str, entry: CatalogEntry) -> float:
+def _title_score(read_title: str, entry: CatalogEntry) -> tuple[float, bool]:
+    """Returns (score, matched_via_alt_title) - the second value is only
+    for building an honest reason string, not used in scoring itself."""
     read_norm = normalize_title(read_title)
     best = 0.0
+    matched_via_alt = False
     for candidate_title in (entry.title, *entry.alt_titles):
         candidate_norm = normalize_title(candidate_title)
         raw = fuzz.WRatio(read_norm, candidate_norm) / 100
         penalty = _length_ratio_penalty(read_norm, candidate_norm)
-        best = max(best, raw * penalty)
-    return best
+        score = raw * penalty
+        if score > best:
+            best = score
+            matched_via_alt = candidate_title != entry.title
+    return best, matched_via_alt
 
 
 def _author_score(read_author: str, entry: CatalogEntry) -> float | None:
@@ -96,22 +103,46 @@ def _author_score(read_author: str, entry: CatalogEntry) -> float | None:
     return score / 100
 
 
-def _combined_score(read_title: str, read_author: str, entry: CatalogEntry) -> float:
-    title_score = _title_score(read_title, entry)
+def _score_entry(read_title: str, read_author: str, entry: CatalogEntry) -> tuple[float, list[str]]:
+    """Score one catalog entry against a VLM read and explain, in plain
+    words, why - these reasons are shown to the user in the review UI, so
+    they describe what actually happened in this function, not a vibe."""
+    title_score, matched_via_alt = _title_score(read_title, entry)
     author_score = _author_score(read_author, entry)
+
+    reasons = []
+    if title_score >= 0.99:
+        reasons.append("matched an alternate title" if matched_via_alt else "exact title match")
+    elif title_score >= HIGH_CONFIDENCE_THRESHOLD:
+        reasons.append("close title match")
+    elif title_score >= REVIEW_FLOOR:
+        reasons.append("partial title match")
+    else:
+        reasons.append("title does not match well")
+
     if author_score is None:
-        return title_score
-    return TITLE_WEIGHT * title_score + AUTHOR_WEIGHT * author_score
+        reasons.append("no author was read off the spine")
+        return title_score, reasons
+
+    if author_score >= 0.99:
+        reasons.append("exact author match")
+    elif author_score >= HIGH_CONFIDENCE_THRESHOLD:
+        reasons.append("close author match")
+    else:
+        reasons.append("author does not match well")
+
+    combined = TITLE_WEIGHT * title_score + AUTHOR_WEIGHT * author_score
+    return combined, reasons
 
 
 def match(read_title: str, read_author: str = "", top_n: int = 5) -> MatchResult:
     """Score a VLM-read (title, author) against every catalog entry and
     decide whether it's auto-addable, needs human review, or has no
     plausible match at all."""
-    scored = [
-        Candidate(entry=entry, score=_combined_score(read_title, read_author, entry))
-        for entry in load_catalog()
-    ]
+    scored = []
+    for entry in load_catalog():
+        score, reasons = _score_entry(read_title, read_author, entry)
+        scored.append(Candidate(entry=entry, score=score, reasons=reasons))
     scored.sort(key=lambda c: c.score, reverse=True)
     top = scored[:top_n]
 
