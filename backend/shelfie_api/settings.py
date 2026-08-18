@@ -25,7 +25,13 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-k8(dq!l+40_5xoc$em305vxlyl3j4^nrw(1f*!asf9dni4^c2k'
+# Take-home project, never deployed: falls back to a fixed dev value so a
+# clean clone runs with no setup step; a real deployment would require
+# DJANGO_SECRET_KEY to be set and drop the fallback entirely.
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-dev-only-k8(dq!l+40_5xoc$em305vxlyl3j4^nrw(1f',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -134,21 +140,11 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 # Uploaded bookshelf photos
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ],
-}
-
-
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
 }
