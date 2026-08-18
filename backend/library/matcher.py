@@ -90,20 +90,34 @@ def _length_ratio_penalty(a: str, b: str) -> float:
     return shorter / longer
 
 
+def _title_variants(s: str) -> list[str]:
+    """A title's normalized form, plus - if it has a subtitle after a colon
+    - the main title alone as a second form. Both are scored; keeping the
+    full form matters too, since a read that includes the subtitle should
+    still get credit for it."""
+    variants = [normalize_title(s)]
+    if ":" in s:
+        main_title = normalize_title(s.split(":", 1)[0])
+        if main_title and main_title not in variants:
+            variants.append(main_title)
+    return variants
+
+
 def _title_score(read_title: str, entry: CatalogEntry) -> tuple[float, bool]:
     """Returns (score, matched_via_alt_title) - the second value is only
     for building an honest reason string, not used in scoring itself."""
-    read_norm = normalize_title(read_title)
+    read_variants = _title_variants(read_title)
     best = 0.0
     matched_via_alt = False
     for candidate_title in (entry.title, *entry.alt_titles):
-        candidate_norm = normalize_title(candidate_title)
-        raw = fuzz.WRatio(read_norm, candidate_norm) / 100
-        penalty = _length_ratio_penalty(read_norm, candidate_norm)
-        score = raw * penalty
-        if score > best:
-            best = score
-            matched_via_alt = candidate_title != entry.title
+        for candidate_variant in _title_variants(candidate_title):
+            for read_variant in read_variants:
+                raw = fuzz.WRatio(read_variant, candidate_variant) / 100
+                penalty = _length_ratio_penalty(read_variant, candidate_variant)
+                score = raw * penalty
+                if score > best:
+                    best = score
+                    matched_via_alt = candidate_title != entry.title
     return best, matched_via_alt
 
 
