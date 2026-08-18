@@ -6,6 +6,13 @@ from rapidfuzz import fuzz
 
 from .catalog import CatalogEntry, load_catalog
 
+# These five numbers were set by hand, by reasoning about this specific
+# catalog and testing them against it - not from labelled data and not from
+# a precision/recall sweep. There was no time this session to build a
+# labelled test set (real photos, real VLM reads, ground-truth catalog IDs)
+# to tune against. Treat them as a defensible starting point, not a
+# calibrated result. Tuning against real data is a "given another day" item.
+
 # Auto-add only if the top match is this confident...
 HIGH_CONFIDENCE_THRESHOLD = 0.90
 # ...AND it beats the runner-up by at least this much. A high score with a
