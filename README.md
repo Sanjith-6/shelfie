@@ -9,7 +9,31 @@ is built. See commit history for progress.
 
 ## Setup and run (clean clone)
 
-TODO — filled in once the backend and app exist.
+### Backend
+
+```
+cd backend
+py -3.12 -m venv .venv
+.venv\Scripts\activate      # Windows; `source .venv/bin/activate` on mac/Linux
+pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` — not required
+for the test suite below, only once the VLM step is wired in.
+
+Run the matcher test suite from the **repo root**:
+
+```
+pytest
+```
+
+`pytest` also works run directly from `backend/` — the config lives in
+`pytest.ini` at the repo root and resolves correctly either way (verified
+both explicitly; see commit history).
+
+### Frontend
+
+TODO — Expo app setup steps.
 
 ## Architecture
 
