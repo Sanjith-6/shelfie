@@ -60,13 +60,29 @@ def normalize_author(s: str) -> str:
     return " ".join(s.split())
 
 
+def _length_ratio_penalty(a: str, b: str) -> float:
+    """WRatio alone can score a short title as a near-perfect match against
+    a much longer one that simply contains it ("Dune" inside "Dune
+    Messiah"), because its partial-match component rewards full
+    containment regardless of how much of the longer string is left over.
+    This multiplies the raw score down by how unequal the two lengths are,
+    so containment alone isn't enough - the strings have to be close in
+    length too."""
+    if not a or not b:
+        return 0.0
+    shorter, longer = sorted((len(a), len(b)))
+    return shorter / longer
+
+
 def _title_score(read_title: str, entry: CatalogEntry) -> float:
     read_norm = normalize_title(read_title)
     best = 0.0
     for candidate_title in (entry.title, *entry.alt_titles):
-        score = fuzz.WRatio(read_norm, normalize_title(candidate_title))
-        best = max(best, score)
-    return best / 100
+        candidate_norm = normalize_title(candidate_title)
+        raw = fuzz.WRatio(read_norm, candidate_norm) / 100
+        penalty = _length_ratio_penalty(read_norm, candidate_norm)
+        best = max(best, raw * penalty)
+    return best
 
 
 def _author_score(read_author: str, entry: CatalogEntry) -> float | None:
