@@ -12,6 +12,25 @@ from .catalog import CatalogEntry, load_catalog
 # labelled test set (real photos, real VLM reads, ground-truth catalog IDs)
 # to tune against. Treat them as a defensible starting point, not a
 # calibrated result. Tuning against real data is a "given another day" item.
+#
+# The length-ratio penalty in _length_ratio_penalty() below is deliberately
+# aggressive, and that's a decision, not an oversight. It was tested against
+# realistic truncated-but-legitimate reads (a VLM reading only the main
+# title of a subtitled book, or dropping trailing words) and it does
+# sometimes rank the wrong, shorter book above the correct, longer one - two
+# of eight test cases did. Softening the curve (sqrt, a floor) was tried and
+# doesn't fix it: the raw fuzzy-match score is what's actually ambiguous
+# between "genuine truncation of the right book" and "coincidentally similar
+# wrong book" at that point, not the length penalty's shape. A read of
+# "Dune" is genuinely indistinguishable from a truncated read of "Dune
+# Messiah" - the information needed to tell them apart isn't present in the
+# text, so no scoring function can recover it. That ambiguity belongs with
+# the human reviewer, not something to be scored around. The mitigation is
+# the review/unmatched path, not a better formula - a wrong top-ranked
+# candidate has been verified to never reach AUTO (see
+# test_length_penalty_prevents_substring_confusion and the audit that
+# preceded it), so the failure mode this trades into is "needs a human to
+# confirm or search manually," never a silent wrong add.
 
 # Auto-add only if the top match is this confident...
 HIGH_CONFIDENCE_THRESHOLD = 0.90
