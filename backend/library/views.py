@@ -1,3 +1,4 @@
+import time
 import uuid
 
 from django.conf import settings
@@ -5,56 +6,35 @@ from PIL import Image
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from .detector import detect_books
+from .matcher import match
 from .models import LibraryEntry
 from .serializers import LibraryEntrySerializer
+from .vlm_reader import read_spines
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
-# Hardcoded until detection/VLM/matching are wired in (later sessions).
-# One spine per status this endpoint can return, so the frontend has a real
-# example of each to build against instead of guessing at the shape.
-STUB_SPINES = [
-    {
-        "raw_read": {"title": "1984", "author": "George Orwell"},
-        "status": "auto",
-        "candidates": [
-            {
-                "catalog_id": 1003,
-                "title": "1984",
-                "author": "George Orwell",
-                "score": 0.97,
-                # Not from matcher.py - it isn't wired into this view yet, so
-                # this is a placeholder shape, not a real explanation.
-                "reasons": ["stub data - matcher not wired in yet"],
-            }
-        ],
-    },
-    {
-        "raw_read": {"title": "The Alchemist", "author": "Paulo Coelho"},
-        "status": "review",
-        "candidates": [
-            {
-                "catalog_id": 1005,
-                "title": "The Alchemist",
-                "author": "Paulo Coelho",
-                "score": 0.82,
-                "reasons": ["stub data - matcher not wired in yet"],
-            },
-            {
-                "catalog_id": 1006,
-                "title": "The Alchemist",
-                "author": "Paulo Coelho",
-                "score": 0.82,
-                "reasons": ["stub data - matcher not wired in yet"],
-            },
-        ],
-    },
-    {
-        "raw_read": {"title": "Some Illegible Spine", "author": None},
-        "status": "unmatched",
-        "candidates": [],
-    },
-]
+
+def _box_to_bbox(box: tuple[int, int, int, int]) -> list[int]:
+    """detector.py boxes are (x1, y1, x2, y2); the API contract's bbox is
+    [x, y, w, h] - a shape decided before real detection existed. Converting
+    here rather than changing the contract the frontend already builds
+    against."""
+    x1, y1, x2, y2 = box
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def _flatten_candidates(candidates):
+    return [
+        {
+            "catalog_id": c.entry.id,
+            "title": c.entry.title,
+            "author": c.entry.author,
+            "score": c.score,
+            "reasons": c.reasons,
+        }
+        for c in candidates
+    ]
 
 
 @api_view(["POST"])
@@ -75,6 +55,7 @@ def scan(request):
     try:
         image = Image.open(uploaded_file)
         image.load()  # forces a full decode, catching truncated/invalid files
+        image = image.convert("RGB")
     except Exception:
         return Response(
             {"error": "invalid_image", "message": "File is not a readable image."},
@@ -85,43 +66,98 @@ def scan(request):
     crops_dir = settings.MEDIA_ROOT / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
 
-    # Real spine detection doesn't exist yet, so we fake plausible bounding
-    # boxes by slicing the photo into vertical thirds - close enough to a
-    # bookshelf's actual layout that the crops look sane, and it proves the
-    # crop_url round trip end to end.
-    rgb_image = image.convert("RGB")
-    width, height = rgb_image.size
-    third_width = width // 3
+    scan_start = time.perf_counter()
+    warnings = []
+
+    t0 = time.perf_counter()
+    detection = detect_books(image)
+    detect_ms = int((time.perf_counter() - t0) * 1000)
+    warnings.extend(detection.warnings)
+
+    if detection.error is not None:
+        total_ms = int((time.perf_counter() - scan_start) * 1000)
+        return Response(
+            {
+                "scan_id": str(scan_id),
+                "timings_ms": {"detect": detect_ms, "vlm": 0, "match": 0, "total": total_ms},
+                "detected_count": 0,
+                "spines": [],
+                "warnings": warnings + [f"detection failed: {detection.error}"],
+            }
+        )
+
+    detections = detection.detections
+    crops = [d.crop for d in detections]
+
+    t0 = time.perf_counter()
+    read_result = read_spines(crops)
+    vlm_ms = int((time.perf_counter() - t0) * 1000)
 
     spines = []
-    for i, stub in enumerate(STUB_SPINES):
+    match_ms = 0
+    for det, read in zip(detections, read_result.reads):
         spine_id = uuid.uuid4()
-        x1 = i * third_width
-        x2 = width if i == len(STUB_SPINES) - 1 else (i + 1) * third_width
-        bbox = [x1, 0, x2 - x1, height]
+        det.crop.save(crops_dir / f"{spine_id}.jpg", format="JPEG", quality=85)
 
-        crop = rgb_image.crop((x1, 0, x2, height))
-        crop.save(crops_dir / f"{spine_id}.jpg", format="JPEG", quality=85)
+        base_spine = {
+            "spine_id": str(spine_id),
+            "bbox": _box_to_bbox(det.box),
+            "crop_url": f"{settings.MEDIA_URL}crops/{spine_id}.jpg",
+        }
+
+        if read.error is not None:
+            # A 4th status value, not one of MatchStatus's three. MatchStatus
+            # is closed and deliberately has no FAILED member - this means the
+            # VLM call itself failed for this spine, not "no catalog match".
+            spines.append(
+                {
+                    **base_spine,
+                    "raw_read": {"title": None, "author": None},
+                    "status": "failed",
+                    "candidates": [],
+                    "error": read.error,
+                }
+            )
+            continue
+
+        if read.title is None:
+            # VLM correctly declined rather than guessing - distinct from
+            # "matcher found nothing" even though both surface as unmatched,
+            # so the error field carries which one actually happened.
+            spines.append(
+                {
+                    **base_spine,
+                    "raw_read": {"title": None, "author": read.author},
+                    "status": "unmatched",
+                    "candidates": [],
+                    "error": "vlm_could_not_read_spine",
+                }
+            )
+            continue
+
+        t_match = time.perf_counter()
+        match_result = match(read.title, read.author or "")
+        match_ms += int((time.perf_counter() - t_match) * 1000)
 
         spines.append(
             {
-                "spine_id": str(spine_id),
-                "bbox": bbox,
-                "crop_url": f"{settings.MEDIA_URL}crops/{spine_id}.jpg",
-                "raw_read": stub["raw_read"],
-                "status": stub["status"],
-                "candidates": stub["candidates"],
+                **base_spine,
+                "raw_read": {"title": read.title, "author": read.author},
+                "status": match_result.status.value,
+                "candidates": _flatten_candidates(match_result.candidates),
                 "error": None,
             }
         )
 
+    total_ms = int((time.perf_counter() - scan_start) * 1000)
+
     return Response(
         {
             "scan_id": str(scan_id),
-            "timings_ms": {"detect": 0, "vlm": 0, "match": 0, "total": 0},
+            "timings_ms": {"detect": detect_ms, "vlm": vlm_ms, "match": match_ms, "total": total_ms},
             "detected_count": len(spines),
             "spines": spines,
-            "warnings": [],
+            "warnings": warnings,
         }
     )
 
