@@ -32,6 +32,22 @@ def test_length_penalty_prevents_substring_confusion():
     assert dune_messiah.score < 0.6
 
 
+def test_length_penalty_is_the_reason_dune_messiah_is_suppressed(monkeypatch):
+    """A permanent version of a manual check done during the matcher audit
+    (neutering the penalty by hand and re-running to confirm the score
+    spikes). The test above already goes red if the penalty is removed,
+    since matcher.py itself would stop suppressing the score - but this
+    test isolates *why*, independent of anything else that might change in
+    the scoring pipeline later: patch out only _length_ratio_penalty, and
+    Dune Messiah's score against a "Dune" read must jump back up near its
+    unpenalized value (measured at 0.930 during the audit)."""
+    monkeypatch.setattr("library.matcher._length_ratio_penalty", lambda a, b: 1.0)
+
+    result = match("Dune", "Frank Herbert")
+    dune_messiah = next(c for c in result.candidates if c.entry.title == "Dune Messiah")
+    assert dune_messiah.score > 0.85
+
+
 def test_alt_title_resolves_to_canonical_entry():
     """UK title read off the spine must resolve to the catalog's US-titled
     canonical entry via alt_titles."""
