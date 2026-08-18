@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -6,6 +6,7 @@ import {
   Button,
   FlatList,
   Image,
+  Platform,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -66,18 +67,25 @@ const STATUS_COLORS: Record<SpineStatus, string> = {
 
 export default function App() {
   const [state, setState] = useState<ScreenState>({ phase: "idle" });
+  const webFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  async function uploadImage(uri: string) {
+  // Native gives us a local file URI; web's file input gives us the File
+  // object directly. Both funnel through this one function from here on.
+  async function uploadImage(source: string | File) {
     setState({ phase: "uploading" });
 
     const formData = new FormData();
-    // React Native's fetch wants this object shape for a file field, not a
-    // Blob - the URI is a local file path the native layer streams from.
-    formData.append("image", {
-      uri,
-      name: "shelf.jpg",
-      type: "image/jpeg",
-    } as unknown as Blob);
+    if (typeof source === "string") {
+      // React Native's fetch wants this object shape for a file field, not
+      // a Blob - the URI is a local file path the native layer streams from.
+      formData.append("image", {
+        uri: source,
+        name: "shelf.jpg",
+        type: "image/jpeg",
+      } as unknown as Blob);
+    } else {
+      formData.append("image", source, source.name || "shelf.jpg");
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/scan`, {
@@ -102,6 +110,33 @@ export default function App() {
         message: "Couldn't reach the server. Check that Django is running and API_BASE_URL in config.ts matches your machine's LAN IP.",
       });
     }
+  }
+
+  // Web-only: a real DOM file input. expo-image-picker technically works on
+  // web, but Expo's own docs say cancellation isn't reliably reported across
+  // browsers - a plain input sidesteps that instead of working around it.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.style.display = "none";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      input.value = ""; // otherwise picking the same file twice fires nothing
+      if (file) uploadImage(file);
+    });
+    document.body.appendChild(input);
+    webFileInputRef.current = input;
+
+    return () => {
+      document.body.removeChild(input);
+    };
+  }, []);
+
+  function pickPhotoWeb() {
+    webFileInputRef.current?.click();
   }
 
   async function takePhoto() {
@@ -134,8 +169,16 @@ export default function App() {
       <Text style={styles.heading}>Shelfie</Text>
 
       <View style={styles.buttonRow}>
-        <Button title="Take Photo" onPress={takePhoto} disabled={state.phase === "uploading"} />
-        <Button title="Choose Photo" onPress={pickFromLibrary} disabled={state.phase === "uploading"} />
+        {Platform.OS === "web" ? (
+          // No camera on a laptop - a "Take Photo" button here would just
+          // open the same file dialog, which is worse than not having it.
+          <Button title="Choose Photo" onPress={pickPhotoWeb} disabled={state.phase === "uploading"} />
+        ) : (
+          <>
+            <Button title="Take Photo" onPress={takePhoto} disabled={state.phase === "uploading"} />
+            <Button title="Choose Photo" onPress={pickFromLibrary} disabled={state.phase === "uploading"} />
+          </>
+        )}
       </View>
 
       {state.phase === "uploading" && (
