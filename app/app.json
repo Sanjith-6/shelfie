@@ -20,6 +20,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Shelfie needs access to your photos to scan a bookshelf picture.",
+          "cameraPermission": "Shelfie needs camera access to take a photo of your bookshelf."
+        }
+      ]
+    ]
   }
 }
