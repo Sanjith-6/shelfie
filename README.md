@@ -21,6 +21,13 @@ pip install -r requirements.txt
 Copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` — not required
 for the test suite below, only once the VLM step is wired in.
 
+**First run of anything that calls the local detector (`library/detector.py`)
+downloads the YOLOv8n weights (~6MB) from Ultralytics' release assets** — you
+need internet access for that one-time download, and it adds a few seconds to
+whichever run triggers it. Look for a log line saying so
+(`Loading YOLOv8n weights - first run on this machine downloads ~6MB...`).
+Subsequent runs load the cached weights file and skip it.
+
 Run the matcher test suite from the **repo root**:
 
 ```
