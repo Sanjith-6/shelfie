@@ -299,5 +299,9 @@ def detect_books(image: Image.Image) -> DetectionResult:
     return DetectionResult(
         detections=kept_fallback,
         path_used="fallback",
-        warnings=[f"used edge-density fallback: YOLO found only {len(kept)} usable box(es)"],
+        warnings=[
+            f"used edge-density fallback: YOLO found only {len(kept)} usable box(es)",
+            "fallback assumes a single front-facing row of spines - results may be "
+            "unreliable on multi-row or steeply angled shelf photos",
+        ],
     )
