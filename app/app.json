@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "app",
-    "slug": "app",
+    "name": "shelfie",
+    "slug": "shelfie",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
