@@ -21,7 +21,7 @@ AUTHOR_WEIGHT = 0.3
 
 class MatchStatus(str, Enum):
     AUTO = "auto"
-    NEEDS_REVIEW = "needs_review"
+    NEEDS_REVIEW = "review"
     UNMATCHED = "unmatched"
 
 
