@@ -9,3 +9,4 @@ pytest-django==4.14.0
 ultralytics==8.4.121
 opencv-python-headless==5.0.0.93
 numpy==2.5.2
+anthropic==0.122.0
