@@ -51,16 +51,24 @@ def _strip_accents(s: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
+_LEADING_ARTICLES = ("the ", "a ", "an ")
+
+
 def normalize_title(s: str) -> str:
-    s = _strip_accents(s or "").lower()
+    s = _strip_accents(s or "").casefold()
     s = " ".join(s.split())
-    return s.strip(" .,:;-")
+    s = s.strip(" .,:;-")
+    for article in _LEADING_ARTICLES:
+        if s.startswith(article):
+            s = s[len(article):]
+            break
+    return s
 
 
 def normalize_author(s: str) -> str:
     """Fold accents, collapse initials, and reorder 'Last, First' to
     'First Last' so catalog inconsistencies don't cost match score."""
-    s = _strip_accents(s or "").lower().strip()
+    s = _strip_accents(s or "").casefold().strip()
     if "," in s:
         last, _, rest = s.partition(",")
         s = f"{rest.strip()} {last.strip()}"
