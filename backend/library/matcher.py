@@ -105,7 +105,8 @@ def match(read_title: str, read_author: str = "", top_n: int = 5) -> MatchResult
     runner_up = top[1].score if len(top) > 1 else 0.0
     margin = top[0].score - runner_up
 
-    if top[0].score >= HIGH_CONFIDENCE_THRESHOLD and margin >= AMBIGUITY_MARGIN:
+    author_read = bool(read_author and read_author.strip())
+    if top[0].score >= HIGH_CONFIDENCE_THRESHOLD and margin >= AMBIGUITY_MARGIN and author_read:
         return MatchResult(status=MatchStatus.AUTO, best=top[0], candidates=top)
 
     return MatchResult(status=MatchStatus.NEEDS_REVIEW, best=top[0], candidates=top)
