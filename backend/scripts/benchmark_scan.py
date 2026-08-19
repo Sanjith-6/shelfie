@@ -31,13 +31,12 @@ from library.detector import detect_books  # noqa: E402
 from library.matcher import match  # noqa: E402
 from library.vlm_reader import VlmMode, read_spines  # noqa: E402
 
-# Published per-million-token pricing for MODEL in vlm_reader.py
-# ("claude-sonnet-5"). Left unset on purpose - filled in with a verified
-# number from Anthropic's pricing page right before the benchmark runs,
-# rather than guessed here. Token counts are printed regardless; cost math
-# is skipped (not estimated) until these are real.
-INPUT_COST_PER_MTOK: float | None = None
-OUTPUT_COST_PER_MTOK: float | None = None
+# Published standard API pricing for MODEL in vlm_reader.py ("claude-sonnet-5"),
+# confirmed at https://platform.claude.com/docs/en/about-claude/pricing on
+# 2026-08-18: $2/MTok input, $10/MTok output. Not the batch-API rate ($1/$5) -
+# these calls are synchronous, not through the Batch API.
+INPUT_COST_PER_MTOK: float | None = 2.0
+OUTPUT_COST_PER_MTOK: float | None = 10.0
 
 PHOTOS_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "photos"
 PHOTO_NAMES = [f"shelf_{i}.jpg" for i in range(1, 8)]
@@ -91,7 +90,9 @@ def run_one(photo_path: Path, mode: VlmMode) -> dict:
         "vlm_ms": round(vlm_ms),
         "match_ms": round(match_ms),
         "total_ms": round(total_ms),
-        "status_counts": {s: statuses.count(s) for s in set(statuses)},
+        "status_counts": {
+            s: statuses.count(s) for s in ("auto", "review", "unmatched", "failed")
+        },
         "input_tokens": read_result.input_tokens,
         "output_tokens": read_result.output_tokens,
         "cost_usd": cost_usd,
@@ -108,6 +109,15 @@ def main():
         "per_spine": [VlmMode.PER_SPINE],
         "both": [VlmMode.BATCHED, VlmMode.PER_SPINE],
     }[args.mode]
+
+    # Loads the YOLO weights into memory once, outside the timed loop, so
+    # per-photo detect_ms reflects inference only - not the one-time model
+    # load, which would otherwise land entirely on whichever photo runs
+    # first and make it look ~100x slower than the rest for no real reason.
+    warmup_start = time.perf_counter()
+    detect_books(Image.new("RGB", (640, 640), color=(255, 255, 255)))
+    warmup_ms = (time.perf_counter() - warmup_start) * 1000
+    print(f"Model warm-up (one-time, excluded from per-photo detect_ms): {warmup_ms:.0f}ms", file=sys.stderr)
 
     rows = []
     for name in PHOTO_NAMES:
