@@ -172,3 +172,17 @@ def library(request):
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data, status=201)
+
+
+@api_view(["DELETE"])
+def library_detail(request, pk):
+    # Only DELETE - needed for undoing an auto-added entry. No GET/PATCH
+    # here since nothing in the review flow needs to fetch or edit a single
+    # entry, only remove one.
+    try:
+        entry = LibraryEntry.objects.get(pk=pk)
+    except LibraryEntry.DoesNotExist:
+        return Response({"error": "not_found", "message": "No library entry with that id."}, status=404)
+
+    entry.delete()
+    return Response(status=204)
