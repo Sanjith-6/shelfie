@@ -1,5 +1,5 @@
 import { addToLibrary, deleteLibraryEntry } from "./api";
-import { QueueItem, ScanResponse, ScanSession } from "./types";
+import { Candidate, QueueItem, ScanResponse, ScanSession } from "./types";
 
 // Called once right after a scan completes. "auto" spines get added to the
 // library immediately - a failed add (network error) still needs a real
@@ -69,6 +69,70 @@ export function setQueueOutcome(session: ScanSession, spineId: string, outcome: 
   return {
     ...session,
     queue: session.queue.map((item) => (item.spine.spine_id === spineId ? { ...item, outcome } : item)),
+  };
+}
+
+// "Confirm top match" and "pick a different candidate" both land here -
+// the only difference is which candidate and which outcome label to record.
+// If addToLibrary throws, this throws too and the queue is left unchanged
+// (outcome stays null / still pending) so the caller can show an inline
+// error and let the user retry the same card, not lose their place.
+export async function resolveWithCandidate(
+  session: ScanSession,
+  spineId: string,
+  candidate: Candidate,
+  outcome: "confirmed" | "corrected",
+): Promise<ScanSession> {
+  const item = session.queue.find((q) => q.spine.spine_id === spineId);
+  if (!item) return session;
+
+  await addToLibrary({
+    catalog_book: candidate.catalog_id,
+    title: candidate.title,
+    author: candidate.author,
+    raw_title: item.spine.raw_read.title ?? "",
+    raw_author: item.spine.raw_read.author ?? "",
+    confidence: candidate.score,
+    resolution: outcome,
+  });
+
+  return setQueueOutcome(session, spineId, outcome);
+}
+
+export async function resolveManually(
+  session: ScanSession,
+  spineId: string,
+  title: string,
+  author: string,
+): Promise<ScanSession> {
+  const item = session.queue.find((q) => q.spine.spine_id === spineId);
+  if (!item) return session;
+
+  await addToLibrary({
+    catalog_book: null,
+    title,
+    author,
+    raw_title: item.spine.raw_read.title ?? "",
+    raw_author: item.spine.raw_read.author ?? "",
+    confidence: null,
+    resolution: "manual",
+  });
+
+  return setQueueOutcome(session, spineId, "manual");
+}
+
+// Discard is client-only, no network call - there's nothing to add to the
+// library, and no server record of a discard is needed for this session.
+export function discardSpine(session: ScanSession, spineId: string): ScanSession {
+  return setQueueOutcome(session, spineId, "discarded");
+}
+
+// The demo escape hatch: an explicit bulk decision, not a silent drop -
+// every item discarded this way still shows up in the "discarded" count.
+export function discardAllPending(session: ScanSession): ScanSession {
+  return {
+    ...session,
+    queue: session.queue.map((item) => (item.outcome === null ? { ...item, outcome: "discarded" } : item)),
   };
 }
 
