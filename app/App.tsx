@@ -14,9 +14,16 @@ export default function App() {
   const [session, setSession] = useState<ScanSession | null>(null);
 
   function handleScanComplete(newSession: ScanSession) {
+    // A zero-detection scan has nothing worth showing on Review - skip
+    // replacing the session so a still-relevant previous scan (e.g. its
+    // added-with-undo list) doesn't get wiped out by an empty one.
+    if (newSession.scan.detected_count === 0) return;
+
     setSession(newSession);
-    const hasPending = newSession.queue.some((item) => item.outcome === null);
-    setScreen(hasPending ? "review" : "scan");
+    // Routes to Review even when everything was auto-added and nothing's
+    // pending - it's the one place that shows the added-with-undo list, so
+    // a scan result is never silently absorbed with no feedback.
+    setScreen("review");
   }
 
   return (

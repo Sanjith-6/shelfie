@@ -6,7 +6,12 @@ import { scanImage } from "../api";
 import { buildScanSession } from "../session";
 import { ScanSession } from "../types";
 
-type LocalState = { phase: "idle" } | { phase: "uploading" } | { phase: "processing" } | { phase: "error"; message: string };
+type LocalState =
+  | { phase: "idle" }
+  | { phase: "uploading" }
+  | { phase: "processing" }
+  | { phase: "error"; message: string }
+  | { phase: "empty" };
 
 export default function ScanScreen({ onScanComplete }: { onScanComplete: (session: ScanSession) => void }) {
   const [state, setState] = useState<LocalState>({ phase: "idle" });
@@ -19,7 +24,12 @@ export default function ScanScreen({ onScanComplete }: { onScanComplete: (sessio
       const scan = await scanImage(source);
       setState({ phase: "processing" });
       const session = await buildScanSession(scan);
-      setState({ phase: "idle" });
+      // Zero detections has nothing to review or add - say so here instead
+      // of silently resetting to the empty idle screen. Anything detected
+      // routes onward via onScanComplete, even if every spine was auto-added
+      // and there's nothing left pending - the Review screen still shows
+      // what was added, so a scan never just disappears with no feedback.
+      setState(scan.detected_count === 0 ? { phase: "empty" } : { phase: "idle" });
       onScanComplete(session);
     } catch (err) {
       setState({
@@ -119,6 +129,13 @@ export default function ScanScreen({ onScanComplete }: { onScanComplete: (sessio
       {state.phase === "error" && (
         <View style={styles.centered}>
           <Text style={styles.errorText}>{state.message}</Text>
+        </View>
+      )}
+
+      {state.phase === "empty" && (
+        <View style={styles.centered}>
+          <Text>No books detected in this photo.</Text>
+          <Text style={styles.hint}>Try a clearer photo, taken straight-on and closer to the shelf.</Text>
         </View>
       )}
 
