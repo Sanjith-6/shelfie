@@ -13,37 +13,8 @@ import {
   View,
 } from "react-native";
 
-import { API_BASE_URL } from "./config";
-
-type RawRead = { title: string | null; author: string | null };
-
-type Candidate = {
-  catalog_id: number;
-  title: string;
-  author: string;
-  score: number;
-  reasons: string[];
-};
-
-type SpineStatus = "auto" | "review" | "unmatched" | "failed";
-
-type Spine = {
-  spine_id: string;
-  bbox: [number, number, number, number];
-  crop_url: string;
-  raw_read: RawRead;
-  status: SpineStatus;
-  candidates: Candidate[];
-  error: string | null;
-};
-
-type ScanResponse = {
-  scan_id: string;
-  timings_ms: { detect: number; vlm: number; match: number; total: number };
-  detected_count: number;
-  spines: Spine[];
-  warnings: string[];
-};
+import { cropImageUrl, scanImage } from "./api";
+import { ScanResponse, SpineStatus } from "./types";
 
 type ScreenState =
   | { phase: "idle" }
@@ -69,45 +40,19 @@ export default function App() {
   const [state, setState] = useState<ScreenState>({ phase: "idle" });
   const webFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Native gives us a local file URI; web's file input gives us the File
-  // object directly. Both funnel through this one function from here on.
   async function uploadImage(source: string | File) {
     setState({ phase: "uploading" });
 
-    const formData = new FormData();
-    if (typeof source === "string") {
-      // React Native's fetch wants this object shape for a file field, not
-      // a Blob - the URI is a local file path the native layer streams from.
-      formData.append("image", {
-        uri: source,
-        name: "shelf.jpg",
-        type: "image/jpeg",
-      } as unknown as Blob);
-    } else {
-      formData.append("image", source, source.name || "shelf.jpg");
-    }
-
     try {
-      const response = await fetch(`${API_BASE_URL}/api/scan`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        setState({
-          phase: "error",
-          message: body?.message ?? `Scan failed (${response.status}).`,
-        });
-        return;
-      }
-
-      const scan: ScanResponse = await response.json();
+      const scan: ScanResponse = await scanImage(source);
       setState({ phase: "results", scan });
-    } catch {
+    } catch (err) {
       setState({
         phase: "error",
-        message: "Couldn't reach the server. Check that Django is running and API_BASE_URL in config.ts matches your machine's LAN IP.",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Couldn't reach the server. Check that Django is running and API_BASE_URL in config.ts matches your machine's LAN IP.",
       });
     }
   }
@@ -208,7 +153,7 @@ export default function App() {
           keyExtractor={(spine) => spine.spine_id}
           renderItem={({ item }) => (
             <View style={styles.spineRow}>
-              <Image source={{ uri: `${API_BASE_URL}${item.crop_url}` }} style={styles.crop} />
+              <Image source={{ uri: cropImageUrl(item.crop_url) }} style={styles.crop} />
               <View style={styles.spineInfo}>
                 <Text style={styles.spineTitle}>{item.raw_read.title ?? "(unreadable)"}</Text>
                 <Text style={styles.spineAuthor}>{item.raw_read.author ?? ""}</Text>
