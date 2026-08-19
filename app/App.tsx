@@ -14,13 +14,15 @@ import {
 } from "react-native";
 
 import { cropImageUrl, scanImage } from "./api";
-import { ScanResponse, SpineStatus } from "./types";
+import { buildScanSession, reconciliation, undoAutoAdd } from "./session";
+import { ScanSession, SpineStatus } from "./types";
 
 type ScreenState =
   | { phase: "idle" }
   | { phase: "uploading" }
+  | { phase: "processing" } // scan done, running the auto-add calls
   | { phase: "error"; message: string }
-  | { phase: "results"; scan: ScanResponse };
+  | { phase: "session"; session: ScanSession };
 
 const STATUS_LABELS: Record<SpineStatus, string> = {
   auto: "Added",
@@ -38,14 +40,18 @@ const STATUS_COLORS: Record<SpineStatus, string> = {
 
 export default function App() {
   const [state, setState] = useState<ScreenState>({ phase: "idle" });
+  const [undoError, setUndoError] = useState<string | null>(null);
   const webFileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function uploadImage(source: string | File) {
     setState({ phase: "uploading" });
+    setUndoError(null);
 
     try {
-      const scan: ScanResponse = await scanImage(source);
-      setState({ phase: "results", scan });
+      const scan = await scanImage(source);
+      setState({ phase: "processing" });
+      const session = await buildScanSession(scan);
+      setState({ phase: "session", session });
     } catch (err) {
       setState({
         phase: "error",
@@ -54,6 +60,17 @@ export default function App() {
             ? err.message
             : "Couldn't reach the server. Check that Django is running and API_BASE_URL in config.ts matches your machine's LAN IP.",
       });
+    }
+  }
+
+  async function handleUndo(spineId: string) {
+    if (state.phase !== "session") return;
+    try {
+      const updated = await undoAutoAdd(state.session, spineId);
+      setState({ phase: "session", session: updated });
+      setUndoError(null);
+    } catch (err) {
+      setUndoError(err instanceof Error ? err.message : "Couldn't undo - try again.");
     }
   }
 
@@ -117,11 +134,11 @@ export default function App() {
         {Platform.OS === "web" ? (
           // No camera on a laptop - a "Take Photo" button here would just
           // open the same file dialog, which is worse than not having it.
-          <Button title="Choose Photo" onPress={pickPhotoWeb} disabled={state.phase === "uploading"} />
+          <Button title="Choose Photo" onPress={pickPhotoWeb} disabled={isBusy(state)} />
         ) : (
           <>
-            <Button title="Take Photo" onPress={takePhoto} disabled={state.phase === "uploading"} />
-            <Button title="Choose Photo" onPress={pickFromLibrary} disabled={state.phase === "uploading"} />
+            <Button title="Take Photo" onPress={takePhoto} disabled={isBusy(state)} />
+            <Button title="Choose Photo" onPress={pickFromLibrary} disabled={isBusy(state)} />
           </>
         )}
       </View>
@@ -133,40 +150,102 @@ export default function App() {
         </View>
       )}
 
+      {state.phase === "processing" && (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" />
+          <Text>Adding confident matches to your library...</Text>
+        </View>
+      )}
+
       {state.phase === "error" && (
         <View style={styles.centered}>
           <Text style={styles.errorText}>{state.message}</Text>
         </View>
       )}
 
-      {state.phase === "results" && state.scan.detected_count === 0 && (
+      {state.phase === "session" && state.session.scan.detected_count === 0 && (
         <View style={styles.centered}>
           <Text>No books detected in this photo.</Text>
           <Text style={styles.hint}>Try a clearer photo, taken straight-on and closer to the shelf.</Text>
         </View>
       )}
 
-      {state.phase === "results" && state.scan.detected_count > 0 && (
-        <FlatList
-          style={styles.list}
-          data={state.scan.spines}
-          keyExtractor={(spine) => spine.spine_id}
-          renderItem={({ item }) => (
-            <View style={styles.spineRow}>
-              <Image source={{ uri: cropImageUrl(item.crop_url) }} style={styles.crop} />
-              <View style={styles.spineInfo}>
-                <Text style={styles.spineTitle}>{item.raw_read.title ?? "(unreadable)"}</Text>
-                <Text style={styles.spineAuthor}>{item.raw_read.author ?? ""}</Text>
-                <Text style={[styles.badge, { color: STATUS_COLORS[item.status] }]}>
-                  {STATUS_LABELS[item.status]}
-                </Text>
-                {item.error && <Text style={styles.errorText}>{item.error}</Text>}
-              </View>
-            </View>
-          )}
-        />
+      {state.phase === "session" && state.session.scan.detected_count > 0 && (
+        <SessionSummary session={state.session} undoError={undoError} onUndo={handleUndo} />
       )}
     </SafeAreaView>
+  );
+}
+
+function isBusy(state: ScreenState) {
+  return state.phase === "uploading" || state.phase === "processing";
+}
+
+function SessionSummary({
+  session,
+  undoError,
+  onUndo,
+}: {
+  session: ScanSession;
+  undoError: string | null;
+  onUndo: (spineId: string) => void;
+}) {
+  const counts = reconciliation(session);
+  const addedSpines = session.scan.spines.filter((s) => session.autoOutcomes[s.spine_id]?.status === "added");
+  const pendingItems = session.queue.filter((q) => q.outcome === null);
+
+  return (
+    <FlatList
+      style={styles.list}
+      data={[]}
+      keyExtractor={() => "unused"}
+      renderItem={null}
+      ListHeaderComponent={
+        <View>
+          <Text style={styles.reconciliation}>
+            {counts.resolved} of {counts.total} resolved - {counts.pending} pending
+          </Text>
+          {undoError && <Text style={styles.errorText}>{undoError}</Text>}
+
+          {addedSpines.length > 0 && (
+            <>
+              <Text style={styles.sectionHeading}>Added to library ({addedSpines.length})</Text>
+              {addedSpines.map((spine) => (
+                <View key={spine.spine_id} style={styles.spineRow}>
+                  <Image source={{ uri: cropImageUrl(spine.crop_url) }} style={styles.crop} />
+                  <View style={styles.spineInfo}>
+                    <Text style={styles.spineTitle}>{spine.raw_read.title ?? "(unreadable)"}</Text>
+                    <Text style={styles.spineAuthor}>{spine.raw_read.author ?? ""}</Text>
+                    <Text style={[styles.badge, { color: STATUS_COLORS.auto }]}>{STATUS_LABELS.auto}</Text>
+                  </View>
+                  <Button title="Undo" onPress={() => onUndo(spine.spine_id)} />
+                </View>
+              ))}
+            </>
+          )}
+
+          {pendingItems.length > 0 && (
+            <>
+              <Text style={styles.sectionHeading}>Needs your attention ({pendingItems.length})</Text>
+              <Text style={styles.hint}>Review screen coming next - these are listed here for now.</Text>
+              {pendingItems.map(({ spine }) => (
+                <View key={spine.spine_id} style={styles.spineRow}>
+                  <Image source={{ uri: cropImageUrl(spine.crop_url) }} style={styles.crop} />
+                  <View style={styles.spineInfo}>
+                    <Text style={styles.spineTitle}>{spine.raw_read.title ?? "(unreadable)"}</Text>
+                    <Text style={styles.spineAuthor}>{spine.raw_read.author ?? ""}</Text>
+                    <Text style={[styles.badge, { color: STATUS_COLORS[spine.status] }]}>
+                      {STATUS_LABELS[spine.status]}
+                    </Text>
+                    {spine.error && <Text style={styles.errorText}>{spine.error}</Text>}
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+        </View>
+      }
+    />
   );
 }
 
@@ -197,6 +276,19 @@ const styles = StyleSheet.create({
   hint: {
     color: "#666",
     textAlign: "center",
+  },
+  reconciliation: {
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+    marginVertical: 8,
+  },
+  sectionHeading: {
+    fontSize: 17,
+    fontWeight: "700",
+    marginTop: 16,
+    marginBottom: 4,
+    paddingHorizontal: 12,
   },
   errorText: {
     color: "#c62828",

@@ -43,3 +43,19 @@ export type LibraryEntry = {
   resolution: LibraryResolution;
   created_at: string;
 };
+
+export type AutoAddOutcome = { status: "added"; entryId: number } | { status: "failed"; message: string };
+
+export type ReviewOutcome = "confirmed" | "corrected" | "manual" | "discarded";
+
+export type QueueItem = {
+  spine: Spine;
+  outcome: ReviewOutcome | null; // null = still pending a decision
+};
+
+export type ScanSession = {
+  scan: ScanResponse;
+  // Keyed by spine_id. Only spines whose status was "auto" get an entry here.
+  autoOutcomes: Record<string, AutoAddOutcome>;
+  queue: QueueItem[];
+};
