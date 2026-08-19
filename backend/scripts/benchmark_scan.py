@@ -102,6 +102,11 @@ def run_one(photo_path: Path, mode: VlmMode) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["batched", "per_spine", "both"], default="batched")
+    parser.add_argument(
+        "--photo",
+        choices=PHOTO_NAMES,
+        help="Restrict to a single fixture photo, e.g. --photo shelf_1.jpg (default: all 7)",
+    )
     args = parser.parse_args()
 
     modes = {
@@ -109,6 +114,7 @@ def main():
         "per_spine": [VlmMode.PER_SPINE],
         "both": [VlmMode.BATCHED, VlmMode.PER_SPINE],
     }[args.mode]
+    photo_names = [args.photo] if args.photo else PHOTO_NAMES
 
     # Loads the YOLO weights into memory once, outside the timed loop, so
     # per-photo detect_ms reflects inference only - not the one-time model
@@ -120,7 +126,7 @@ def main():
     print(f"Model warm-up (one-time, excluded from per-photo detect_ms): {warmup_ms:.0f}ms", file=sys.stderr)
 
     rows = []
-    for name in PHOTO_NAMES:
+    for name in photo_names:
         for mode in modes:
             print(f"Running {name} in {mode.value} mode...", file=sys.stderr)
             row = run_one(PHOTOS_DIR / name, mode)
