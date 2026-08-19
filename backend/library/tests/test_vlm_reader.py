@@ -1,9 +1,11 @@
+import json
+
 import httpx
 import pytest
 from PIL import Image
 
 from library import vlm_reader
-from library.vlm_reader import VlmMode, _repair_json, read_spines
+from library.vlm_reader import MAX_CROP_DIMENSION, VlmMode, _repair_json, _resize_if_needed, read_spines
 
 
 def _make_image():
@@ -116,6 +118,75 @@ def test_per_spine_one_failure_does_not_affect_others(monkeypatch):
     assert result.reads[0].title == "Dune" and result.reads[0].error is None
     assert result.reads[1].error == "vlm_timeout"
     assert result.reads[2].title == "Dune" and result.reads[2].error is None
+
+
+def test_resize_downscales_oversized_crop():
+    # Shaped like a real fallback strip: full image height, easily over the limit.
+    image = Image.new("RGB", (1000, 4284))
+
+    resized = _resize_if_needed(image, index=0)
+
+    assert max(resized.size) == MAX_CROP_DIMENSION
+    assert resized.size[0] / resized.size[1] == pytest.approx(1000 / 4284, rel=0.01)
+
+
+def test_resize_leaves_small_crop_unchanged():
+    image = Image.new("RGB", (300, 600))
+
+    resized = _resize_if_needed(image, index=0)
+
+    assert resized.size == (300, 600)
+
+
+def test_batched_splits_into_chunks_and_remaps_indices_globally(monkeypatch):
+    crops = [_make_image() for _ in range(25)]  # BATCH_CHUNK_SIZE=10 -> chunks of 10, 10, 5
+    call_sizes = []
+
+    def fake_create(**kwargs):
+        content = kwargs["messages"][0]["content"]
+        num_images = sum(1 for block in content if block["type"] == "image")
+        call_sizes.append(num_images)
+        books = [{"index": i, "title": f"book{i}", "author": "author"} for i in range(num_images)]
+        return _FakeResponse(json.dumps({"books": books}))
+
+    fake_client = _FakeClient()
+    fake_client.messages.create = fake_create
+    monkeypatch.setattr(vlm_reader, "_make_client", lambda: fake_client)
+
+    result = read_spines(crops, mode=VlmMode.BATCHED)
+
+    assert call_sizes == [10, 10, 5]
+    assert len(result.reads) == 25
+    assert [r.index for r in result.reads] == list(range(25))
+    # local index 0 of the 2nd chunk must remap to global index 10, not collide with chunk 1's index 0
+    assert result.reads[10].title == "book0"
+
+
+def test_one_chunk_failure_does_not_affect_other_chunks(monkeypatch):
+    crops = [_make_image() for _ in range(15)]  # BATCH_CHUNK_SIZE=10 -> chunks of 10, 5
+    call_n = {"n": 0}
+
+    import anthropic
+
+    def fake_create(**kwargs):
+        call_n["n"] += 1
+        if call_n["n"] == 1:
+            raise anthropic.APITimeoutError(request=httpx.Request("POST", "https://example.test"))
+        content = kwargs["messages"][0]["content"]
+        num_images = sum(1 for block in content if block["type"] == "image")
+        books = [{"index": i, "title": f"book{i}", "author": "author"} for i in range(num_images)]
+        return _FakeResponse(json.dumps({"books": books}))
+
+    fake_client = _FakeClient()
+    fake_client.messages.create = fake_create
+    monkeypatch.setattr(vlm_reader, "_make_client", lambda: fake_client)
+
+    result = read_spines(crops, mode=VlmMode.BATCHED)
+
+    assert len(result.reads) == 15
+    assert all(r.error == "vlm_timeout" for r in result.reads[:10])
+    assert all(r.error is None for r in result.reads[10:])
+    assert result.reads[10].title == "book0"
 
 
 def test_empty_crop_list_short_circuits_without_a_client(monkeypatch):

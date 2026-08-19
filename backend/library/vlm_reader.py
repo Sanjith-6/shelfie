@@ -17,6 +17,20 @@ MAX_TOKENS = 4096
 REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 1  # one retry, then that call fails - not the SDK's default of 2
 
+# Anthropic rejects many-image requests containing any image over 2000px on
+# its longest edge. Found this in production-shaped testing, not the docs -
+# real fallback-path crops (full image height, easily 4000px+) and some
+# dense-shelf YOLO crops both cross it. 1800px leaves margin below the hard
+# limit and spine text is still legible at that size.
+MAX_CROP_DIMENSION = 1800
+
+# Crops per batched API call. Also found empirically: sending 35-46 crops in
+# one request is slow enough to blow the 30s timeout even when every crop is
+# under the size limit. Chunking keeps each request's payload and processing
+# time bounded, at the cost of paying the per-request prompt overhead once
+# per chunk instead of once per photo.
+BATCH_CHUNK_SIZE = 10
+
 
 class VlmMode(str, Enum):
     BATCHED = "batched"  # every crop from a photo in one call
@@ -110,6 +124,16 @@ def _encode_jpeg(image: Image.Image) -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _resize_if_needed(image: Image.Image, index: int) -> Image.Image:
+    longest_edge = max(image.size)
+    if longest_edge <= MAX_CROP_DIMENSION:
+        return image
+    scale = MAX_CROP_DIMENSION / longest_edge
+    new_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    logger.info("Resizing crop %d: %s -> %s (exceeded %dpx)", index, image.size, new_size, MAX_CROP_DIMENSION)
+    return image.resize(new_size, Image.LANCZOS)
+
+
 def _repair_json(text: str) -> str:
     """Best-effort cleanup before giving up on a malformed response: models
     occasionally wrap JSON in a markdown code fence despite a schema-forced
@@ -151,7 +175,10 @@ def _log_usage(mode: VlmMode, num_images: int, usage) -> None:
     )
 
 
-def _read_batched(client: anthropic.Anthropic, crops: list[Image.Image]) -> ReadResult:
+def _read_batched_chunk(client: anthropic.Anthropic, crops: list[Image.Image]) -> ReadResult:
+    """One API call for one chunk of crops. Indices in the returned reads
+    are local to this chunk (0..len(crops)-1) - the caller remaps them to
+    the photo's real spine indices."""
     content = []
     for i, crop in enumerate(crops):
         content.append({"type": "text", "text": f"Image {i}:"})
@@ -222,6 +249,23 @@ def _read_batched(client: anthropic.Anthropic, crops: list[Image.Image]) -> Read
     return ReadResult(reads=reads, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
 
 
+def _read_batched_all(client: anthropic.Anthropic, crops: list[Image.Image]) -> ReadResult:
+    """Splits crops into BATCH_CHUNK_SIZE-sized calls. Each chunk is its own
+    independent API call - one chunk timing out or erroring must not affect
+    any other chunk's results, same isolation guarantee as per-spine mode,
+    just at chunk granularity instead of single-crop granularity."""
+    reads: list[SpineRead] = []
+    total_input, total_output = 0, 0
+    for chunk_start in range(0, len(crops), BATCH_CHUNK_SIZE):
+        chunk = crops[chunk_start : chunk_start + BATCH_CHUNK_SIZE]
+        chunk_result = _read_batched_chunk(client, chunk)
+        for r in chunk_result.reads:
+            reads.append(SpineRead(index=chunk_start + r.index, title=r.title, author=r.author, error=r.error))
+        total_input += chunk_result.input_tokens
+        total_output += chunk_result.output_tokens
+    return ReadResult(reads=reads, input_tokens=total_input, output_tokens=total_output)
+
+
 def _read_single(client: anthropic.Anthropic, crop: Image.Image, index: int) -> tuple[SpineRead, int, int]:
     content = [
         {
@@ -271,10 +315,11 @@ def read_spines(crops: list[Image.Image], mode: VlmMode = VLM_MODE) -> ReadResul
     if not crops:
         return ReadResult(reads=[])
 
+    crops = [_resize_if_needed(crop, i) for i, crop in enumerate(crops)]
     client = _make_client()
 
     if mode == VlmMode.BATCHED:
-        return _read_batched(client, crops)
+        return _read_batched_all(client, crops)
 
     reads = []
     total_input, total_output = 0, 0
