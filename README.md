@@ -82,7 +82,7 @@ project-specific) and `npx tsc --noEmit` is clean in a fresh clone.
 `app/config.ts` has one constant that matters for **native device testing**:
 
 ```ts
-const LAN_IP = "172.20.10.3";
+const LAN_IP = "<your machine's LAN IP>";
 ```
 
 The web target always talks to `localhost:8000` directly, no change needed.
@@ -321,6 +321,14 @@ in the test suite.
 
 ## What's unfinished / what I'd do with another day
 
+- **A real interactive pass on the review flow in an actual browser.** No
+  browser automation tool was available in this environment - the frontend
+  was verified via `tsc --noEmit`, a clean web bundle export, and live HTTP
+  contract tests against a running Django server (not just Django's test
+  client), but never actually clicked through. This is the single highest-
+  value thing to do before a live demo, and the most consequential gap on
+  this list - everything else here is a known, scoped limitation; this is
+  the one piece of the actual review UI that's simply unverified.
 - **Matcher thresholds are hand-set, not calibrated.** `HIGH_CONFIDENCE_THRESHOLD`,
   `AMBIGUITY_MARGIN`, `REVIEW_FLOOR`, and the title/author weights were
   reasoned about against this specific catalog, not tuned against labelled
@@ -328,12 +336,6 @@ in the test suite.
   wasn't time to build that dataset this session.
 - **Review queue persistence** (AsyncStorage) so an in-progress review
   survives an app restart, not just a network hiccup mid-decision.
-- **A real interactive pass on the review flow in an actual browser.** No
-  browser automation tool was available in this environment - the frontend
-  was verified via `tsc --noEmit`, a clean web bundle export, and live HTTP
-  contract tests against a running Django server (not just Django's test
-  client), but never actually clicked through. This is the single highest-
-  value thing to do before a live demo.
 - **Multi-row shelf handling**, properly this time - likely needs a
   different signal entirely (e.g. clustering YOLO box y-centers when there
   are enough of them, rather than a generic edge-energy projection).
